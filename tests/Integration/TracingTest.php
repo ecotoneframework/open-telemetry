@@ -8,6 +8,8 @@ use function json_encode;
 
 use OpenTelemetry\API\Trace\TracerProviderInterface;
 
+use OpenTelemetry\SDK\Trace\SpanDataInterface;
+
 use OpenTelemetry\SDK\Trace\SpanExporter\InMemoryExporter;
 use OpenTelemetry\SDK\Trace\SpanExporterInterface;
 use OpenTelemetry\SDK\Trace\SpanProcessor\SimpleSpanProcessor;
@@ -28,6 +30,7 @@ abstract class TracingTest extends TestCase
     public static function buildTree(InMemoryExporter $exporter): array
     {
         $tree = [];
+        /** @var SpanDataInterface $span */
         foreach ($exporter->getSpans() as $span) {
             $preparedSpan = [
                 'details' => [
@@ -37,6 +40,7 @@ abstract class TracingTest extends TestCase
                     'attributes' => $span->getAttributes()->toArray(),
                     'kind' => $span->getKind(),
                     'links' => $span->getLinks(),
+                    'events' => $span->getEvents(),
                 ],
                 'children' => [],
             ];
