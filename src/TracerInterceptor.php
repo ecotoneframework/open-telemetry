@@ -9,6 +9,7 @@ use Ecotone\Messaging\Handler\Processor\MethodInvoker\MethodInvocation;
 use Ecotone\Messaging\Message;
 use Ecotone\Messaging\MessageHeaders;
 
+use Ecotone\Messaging\Support\MessageBuilder;
 use Exception;
 
 use function json_decode;
@@ -16,9 +17,11 @@ use function json_decode;
 use OpenTelemetry\API\Trace\Propagation\TraceContextPropagator;
 
 use OpenTelemetry\API\Trace\SpanInterface;
+
 use OpenTelemetry\API\Trace\SpanKind;
 use OpenTelemetry\API\Trace\StatusCode;
 use OpenTelemetry\API\Trace\TracerProviderInterface;
+use OpenTelemetry\Context\Context;
 use OpenTelemetry\Context\ScopeInterface;
 use OpenTelemetry\SDK\Trace\Span;
 use Throwable;
@@ -50,6 +53,30 @@ final class TracerInterceptor
         }
 
         return $trace;
+    }
+
+    public function provideContextForDistributedBus(Message $message): Message
+    {
+        $ctx = Span::getCurrent()->storeInContext(Context::getCurrent());
+        $carrier = [];
+        TraceContextPropagator::getInstance()->inject($carrier, null, $ctx);
+
+        return MessageBuilder::fromMessage($message)
+            ->setHeader(TracingChannelInterceptor::TRACING_CARRIER_HEADER, json_encode($carrier))
+            ->build();
+    }
+
+    public function traceDistributedBus(MethodInvocation $methodInvocation, Message $message): mixed
+    {
+        $span = EcotoneSpanBuilder::create($message, 'Distributed Bus', $this->tracerProvider, SpanKind::KIND_PRODUCER)
+            ->startSpan();
+        $spanScope = $span->activate();
+
+        $result = $methodInvocation->proceed();
+
+        $this->closeSpan($span, $spanScope, StatusCode::STATUS_OK, null);
+
+        return $result;
     }
 
     public function traceCommandHandler(MethodInvocation $methodInvocation, Message $message)
