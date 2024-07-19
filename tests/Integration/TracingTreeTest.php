@@ -36,6 +36,10 @@ use Test\Ecotone\OpenTelemetry\Fixture\MessageHandlerFlow\ExampleMessageHandler;
 /**
  * @internal
  */
+/**
+ * licence Apache-2.0
+ * @internal
+ */
 final class TracingTreeTest extends TracingTest
 {
     public function test_tracing_tree_with_single_levels_of_nesting()
