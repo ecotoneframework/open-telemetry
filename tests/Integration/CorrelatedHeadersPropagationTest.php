@@ -31,7 +31,7 @@ use Test\Ecotone\OpenTelemetry\Fixture\CommandEventFlow\User;
  * licence Apache-2.0
  * @internal
  */
-final class CorrelatedHeadersPropagationTestCase extends TracingTestCase
+final class CorrelatedHeadersPropagationTest extends TracingTestCase
 {
     public function test_tracing_with_single_levels_of_nesting()
     {

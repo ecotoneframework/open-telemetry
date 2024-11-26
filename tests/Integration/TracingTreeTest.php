@@ -42,7 +42,7 @@ use Test\Ecotone\OpenTelemetry\Fixture\ScheduledHandler\WorkflowScheduledHandler
  * licence Apache-2.0
  * @internal
  */
-final class TracingTreeTestCase extends TracingTestCase
+final class TracingTreeTest extends TracingTestCase
 {
     public function test_tracing_tree_with_single_levels_of_nesting()
     {
