@@ -17,8 +17,12 @@
     ],
     "keywords": [
         "ecotone",
-        "Open telemetry",
-        "tracing"
+        "opentelemetry",
+        "otel",
+        "tracing",
+        "distributed-tracing",
+        "observability",
+        "otlp"
     ],
     "description": "OpenTelemetry distributed tracing for Ecotone — automatic spans and trace context propagation across sync and async flows.",
     "autoload": {
@@ -34,7 +38,7 @@
         }
     },
     "require": {
-        "ecotone/ecotone": "~1.313.1",
+        "ecotone/ecotone": "~1.313.2",
         "open-telemetry/sdk": "^1.0.0"
     },
     "require-dev": {
@@ -60,7 +64,7 @@
     },
     "extra": {
         "branch-alias": {
-            "dev-main": "1.313.1-dev"
+            "dev-main": "1.313.2-dev"
         },
         "ecotone": {
             "repository": "open-telemetry"
@@ -76,7 +80,7 @@
                 "description": "Allows to use Enterprise features of Ecotone. For more information please write to support@simplycodedsoftware.com"
             }
         },
-        "release-time": "2026-05-18 19:18:46"
+        "release-time": "2026-05-22 17:45:28"
     },
     "config": {
         "allow-plugins": {
