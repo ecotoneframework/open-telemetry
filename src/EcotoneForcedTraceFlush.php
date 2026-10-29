@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Ecotone\OpenTelemetry;
 
-use Ecotone\Api\Interceptor\MethodInvocation;
+use Ecotone\Messaging\Handler\Processor\MethodInvoker\MethodInvocation;
 use OpenTelemetry\API\Trace\TracerProviderInterface;
 use OpenTelemetry\SDK\Trace\TracerProviderInterface as SdkTracerProviderInterface;
 
@@ -13,8 +13,12 @@ use OpenTelemetry\SDK\Trace\TracerProviderInterface as SdkTracerProviderInterfac
  */
 final class EcotoneForcedTraceFlush
 {
+    /**
+     * @param SdkTracerProviderInterface $tracerProvider
+     */
     public function __construct(private TracerProviderInterface $tracerProvider)
     {
+
     }
 
     public function flush(MethodInvocation $methodInvocation): mixed
@@ -22,9 +26,7 @@ final class EcotoneForcedTraceFlush
         try {
             $result = $methodInvocation->proceed();
         } finally {
-            if ($this->tracerProvider instanceof SdkTracerProviderInterface) {
-                $this->tracerProvider->forceFlush();
-            }
+            $this->tracerProvider->forceFlush();
         }
 
         return $result;

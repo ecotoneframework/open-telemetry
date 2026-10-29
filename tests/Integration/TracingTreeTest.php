@@ -5,11 +5,12 @@ declare(strict_types=1);
 namespace Test\Ecotone\OpenTelemetry\Integration;
 
 use ArrayObject;
-use Ecotone\Api\ExtensionObject\ExecutionPollingMetadata;
-use Ecotone\Api\ExtensionObject\ModulePackageList;
-use Ecotone\Api\ExtensionObject\SimpleMessageChannelBuilder;
-use Ecotone\Api\Lite\EcotoneLite;
-use Ecotone\Api\OpenTelemetry\OpenTelemetryConfiguration;
+use Ecotone\Lite\EcotoneLite;
+use Ecotone\Messaging\Channel\SimpleMessageChannelBuilder;
+use Ecotone\Messaging\Config\ModulePackageList;
+use Ecotone\Messaging\Config\ServiceConfiguration;
+use Ecotone\Messaging\Endpoint\ExecutionPollingMetadata;
+use Ecotone\OpenTelemetry\Configuration\TracingConfiguration;
 use Ecotone\OpenTelemetry\Support\OTelTracer;
 use InvalidArgumentException;
 use Monolog\Handler\StreamHandler;
@@ -17,12 +18,22 @@ use Monolog\Logger;
 use OpenTelemetry\API\Trace\TracerProviderInterface;
 use OpenTelemetry\SDK\Common\Log\LoggerHolder;
 use OpenTelemetry\SDK\Common\Time\ClockFactory;
+use OpenTelemetry\SDK\Trace\Event;
 use OpenTelemetry\SDK\Trace\SpanExporter\InMemoryExporter;
 use OpenTelemetry\SDK\Trace\SpanProcessor\BatchSpanProcessor;
 use OpenTelemetry\SDK\Trace\TracerProvider;
+use stdClass;
 use Test\Ecotone\OpenTelemetry\Fixture\AsynchronousFlow\UserNotifier;
+use Test\Ecotone\OpenTelemetry\Fixture\CommandEventFlow\CreateMerchant;
+use Test\Ecotone\OpenTelemetry\Fixture\CommandEventFlow\Merchant;
+use Test\Ecotone\OpenTelemetry\Fixture\CommandEventFlow\MerchantCreated;
+use Test\Ecotone\OpenTelemetry\Fixture\CommandEventFlow\MerchantSubscriberOne;
+use Test\Ecotone\OpenTelemetry\Fixture\CommandEventFlow\MerchantSubscriberTwo;
 use Test\Ecotone\OpenTelemetry\Fixture\CommandEventFlow\RegisterUser;
 use Test\Ecotone\OpenTelemetry\Fixture\CommandEventFlow\User;
+use Test\Ecotone\OpenTelemetry\Fixture\MessageHandlerFlow\ExampleMessageHandler;
+use Test\Ecotone\OpenTelemetry\Fixture\ScheduledHandler\ScheduledHandler;
+use Test\Ecotone\OpenTelemetry\Fixture\ScheduledHandler\WorkflowScheduledHandler;
 
 /**
  * @internal
@@ -33,6 +44,148 @@ use Test\Ecotone\OpenTelemetry\Fixture\CommandEventFlow\User;
  */
 final class TracingTreeTest extends TracingTestCase
 {
+    public function test_tracing_tree_with_single_levels_of_nesting()
+    {
+        $exporter = new InMemoryExporter(new ArrayObject());
+
+        EcotoneLite::bootstrapFlowTesting(
+            [User::class],
+            [TracerProviderInterface::class => TracingTestCase::prepareTracer($exporter)],
+            ServiceConfiguration::createWithDefaults()
+                ->withSkippedModulePackageNames(ModulePackageList::allPackagesExcept([ModulePackageList::TRACING_PACKAGE]))
+        )
+            ->sendCommand(new RegisterUser('1'));
+
+        self::compareTreesByDetails(
+            [
+                [
+                    'details' => ['name' => 'Command Bus'],
+                    'children' => [
+                        [
+                            'details' => ['name' => 'Command Handler: ' . User::class . '::register'],
+                            'children' => [],
+                        ],
+                    ],
+                ],
+            ],
+            self::buildTree($exporter)
+        );
+    }
+
+    public function test_tracing_tree_with_two_levels_of_nesting_and_message_handler()
+    {
+        $exporter = new InMemoryExporter(new ArrayObject());
+
+        EcotoneLite::bootstrapFlowTesting(
+            [ExampleMessageHandler::class],
+            [TracerProviderInterface::class => TracingTestCase::prepareTracer($exporter), ExampleMessageHandler::class => new ExampleMessageHandler()],
+            ServiceConfiguration::createWithDefaults()
+                ->withSkippedModulePackageNames(ModulePackageList::allPackagesExcept([ModulePackageList::TRACING_PACKAGE]))
+        )
+            ->sendCommandWithRoutingKey('handleCommand');
+
+        self::compareTreesByDetails(
+            [
+                [
+                    'details' => ['name' => 'Command Bus'],
+                    'children' => [
+                        [
+                            'details' => ['name' => 'Command Handler: ' . ExampleMessageHandler::class . '::handleCommand'],
+                            'children' => [],
+                        ],
+                        [
+                            'details' => ['name' => 'Message Handler: ' . ExampleMessageHandler::class . '::handle'],
+                            'children' => [],
+                        ],
+                    ],
+                ],
+            ],
+            self::buildTree($exporter)
+        );
+    }
+
+    public function test_tracing_scheduled_handler()
+    {
+        $exporter = new InMemoryExporter(new ArrayObject());
+
+        EcotoneLite::bootstrapFlowTesting(
+            [ScheduledHandler::class],
+            [TracerProviderInterface::class => TracingTestCase::prepareTracer($exporter), ScheduledHandler::class => new ScheduledHandler()],
+            ServiceConfiguration::createWithDefaults()
+                ->withSkippedModulePackageNames(ModulePackageList::allPackagesExcept([ModulePackageList::TRACING_PACKAGE]))
+        )
+            ->run('scheduled_handler', ExecutionPollingMetadata::createWithDefaults()->withExecutionAmountLimit(2));
+
+        self::compareTreesByDetails(
+            [
+                [
+                    'details' => ['name' => 'Receiving from inbound channel adapter: nullChannel'],
+                    'children' => [],
+                ],
+                [
+                    'details' => ['name' => 'Receiving from inbound channel adapter: nullChannel'],
+                    'children' => [],
+                ],
+            ],
+            self::buildTree($exporter)
+        );
+    }
+
+    public function test_tracing_workflow_scheduled_handler()
+    {
+        $exporter = new InMemoryExporter(new ArrayObject());
+
+        EcotoneLite::bootstrapFlowTesting(
+            [WorkflowScheduledHandler::class],
+            [TracerProviderInterface::class => TracingTestCase::prepareTracer($exporter), WorkflowScheduledHandler::class => new WorkflowScheduledHandler()],
+            ServiceConfiguration::createWithDefaults()
+                ->withSkippedModulePackageNames(ModulePackageList::allPackagesExcept([ModulePackageList::TRACING_PACKAGE]))
+        )
+            ->run('scheduled_handler', ExecutionPollingMetadata::createWithDefaults()->withExecutionAmountLimit(2));
+
+        self::compareTreesByDetails(
+            [
+                [
+                    'details' => ['name' => 'Receiving from inbound channel adapter: add'],
+                    'children' => [
+                        [
+                            'details' => ['name' => 'Message Handler: ' . WorkflowScheduledHandler::class . '::add'],
+                            'children' => [],
+                        ],
+                    ],
+                ],
+                [
+                    'details' => ['name' => 'Receiving from inbound channel adapter: add'],
+                    'children' => [
+                        [
+                            'details' => ['name' => 'Message Handler: ' . WorkflowScheduledHandler::class . '::add'],
+                            'children' => [],
+                        ],
+                    ],
+                ],
+            ],
+            self::buildTree($exporter)
+        );
+    }
+
+    public function test_no_tracing_when_there_is_nothing_to_trace()
+    {
+        $exporter = new InMemoryExporter(new ArrayObject());
+
+        EcotoneLite::bootstrapFlowTesting(
+            [WorkflowScheduledHandler::class],
+            [TracerProviderInterface::class => TracingTestCase::prepareTracer($exporter), WorkflowScheduledHandler::class => new WorkflowScheduledHandler()],
+            ServiceConfiguration::createWithDefaults()
+                ->withSkippedModulePackageNames(ModulePackageList::allPackagesExcept([ModulePackageList::TRACING_PACKAGE]))
+        )
+            ->run('scheduled_handler_without_result', ExecutionPollingMetadata::createWithDefaults()->withExecutionAmountLimit(1));
+
+        $this->assertEquals(
+            [],
+            self::buildTree($exporter)
+        );
+    }
+
     public function test_disabling_force_flushing_traces()
     {
         $exporter = new InMemoryExporter(new ArrayObject());
@@ -45,8 +198,15 @@ final class TracingTreeTest extends TracingTestCase
                     ClockFactory::getDefault()
                 )
             )],
-            extensionObjects: [OpenTelemetryConfiguration::createWithDefaults()->withForceFlushOnBusExecution(false)->withForceFlushOnAsynchronousMessageHandled(false)],
-            enabledModules: [ModulePackageList::TRACING_PACKAGE],
+            ServiceConfiguration::createWithDefaults()
+                ->withSkippedModulePackageNames(ModulePackageList::allPackagesExcept([ModulePackageList::TRACING_PACKAGE]))
+                ->withExtensionObjects(
+                    [
+                        TracingConfiguration::createWithDefaults()
+                            ->withForceFlushOnBusExecution(false)
+                            ->withForceFlushOnAsynchronousMessageHandled(false),
+                    ]
+                )
         )
             ->sendCommand(new RegisterUser('1'));
 
@@ -68,18 +228,25 @@ final class TracingTreeTest extends TracingTestCase
                     ClockFactory::getDefault()
                 )
             )],
-            extensionObjects: [OpenTelemetryConfiguration::createWithDefaults()->withForceFlushOnBusExecution(true)->withForceFlushOnAsynchronousMessageHandled(true)],
-            enabledModules: [ModulePackageList::TRACING_PACKAGE],
+            ServiceConfiguration::createWithDefaults()
+                ->withSkippedModulePackageNames(ModulePackageList::allPackagesExcept([ModulePackageList::TRACING_PACKAGE]))
+                ->withExtensionObjects(
+                    [
+                        TracingConfiguration::createWithDefaults()
+                            ->withForceFlushOnBusExecution(true)
+                            ->withForceFlushOnAsynchronousMessageHandled(true),
+                    ]
+                )
         )
             ->sendCommand(new RegisterUser('1'));
 
         self::compareTreesByDetails(
             [
                 [
-                    'details' => ['name' => 'send command'],
+                    'details' => ['name' => 'Command Bus'],
                     'children' => [
                         [
-                            'details' => ['name' => 'process User::register'],
+                            'details' => ['name' => 'Command Handler: ' . User::class . '::register'],
                             'children' => [],
                         ],
                     ],
@@ -101,8 +268,15 @@ final class TracingTreeTest extends TracingTestCase
                     ClockFactory::getDefault()
                 )
             )],
-            extensionObjects: [OpenTelemetryConfiguration::createWithDefaults()->withForceFlushOnBusExecution(true)->withForceFlushOnAsynchronousMessageHandled(true)],
-            enabledModules: [ModulePackageList::TRACING_PACKAGE],
+            ServiceConfiguration::createWithDefaults()
+                ->withSkippedModulePackageNames(ModulePackageList::allPackagesExcept([ModulePackageList::TRACING_PACKAGE]))
+                ->withExtensionObjects(
+                    [
+                        TracingConfiguration::createWithDefaults()
+                            ->withForceFlushOnBusExecution(true)
+                            ->withForceFlushOnAsynchronousMessageHandled(true),
+                    ]
+                )
         );
 
         $exceptionThrown = false;
@@ -120,15 +294,448 @@ final class TracingTreeTest extends TracingTestCase
 
         $node = $this->getNodeAtTargetedSpan(
             [
-                'details' => ['name' => 'send command'],
+                'details' => ['name' => 'Command Bus'],
                 'child' => [
-                    'details' => ['name' => 'process User::register'],
+                    'details' => ['name' => 'Command Handler: ' . User::class . '::register'],
                 ],
             ],
             self::buildTree($exporter)
         );
 
-        $this->assertContains('exception', array_map(fn ($event): string => $event->getName(), $node['details']['events']));
+        $this->assertSame(
+            'exception',
+            $node['details']['events'][1]->getName()
+        );
+    }
+
+    public function test_separate_traces()
+    {
+        $exporter = new InMemoryExporter(new ArrayObject());
+
+        EcotoneLite::bootstrapFlowTesting(
+            [User::class],
+            [TracerProviderInterface::class => TracingTestCase::prepareTracer($exporter)],
+            ServiceConfiguration::createWithDefaults()
+                ->withSkippedModulePackageNames(ModulePackageList::allPackagesExcept([ModulePackageList::TRACING_PACKAGE]))
+        )
+            ->sendCommand(new RegisterUser('1'), ['flowId' => '1'])
+            ->sendCommand(new RegisterUser('2'), ['flowId' => '2']);
+
+        self::compareTreesByDetails(
+            [
+                [
+                    'details' => ['name' => 'Command Bus', 'attributes' => ['flowId' => '1']],
+                    'children' => [
+                        [
+                            'details' => ['name' => 'Command Handler: ' . User::class . '::register', 'attributes' => ['flowId' => '1']],
+                            'children' => [],
+                        ],
+                    ],
+                ],
+                [
+                    'details' => ['name' => 'Command Bus', 'attributes' => ['flowId' => '2']],
+                    'children' => [
+                        [
+                            'details' => ['name' => 'Command Handler: ' . User::class . '::register', 'attributes' => ['flowId' => '2']],
+                            'children' => [],
+                        ],
+                    ],
+                ],
+            ],
+            self::buildTree($exporter)
+        );
+    }
+
+    public function test_tracing_with_two_levels_of_nesting()
+    {
+        $exporter = new InMemoryExporter(new ArrayObject());
+
+        EcotoneLite::bootstrapFlowTesting(
+            [User::class, MerchantSubscriberOne::class],
+            [TracerProviderInterface::class => TracingTestCase::prepareTracer($exporter), new MerchantSubscriberOne()],
+            ServiceConfiguration::createWithDefaults()
+                ->withSkippedModulePackageNames(ModulePackageList::allPackagesExcept([ModulePackageList::TRACING_PACKAGE]))
+        )
+            ->publishEvent(new MerchantCreated('1'));
+
+        self::compareTreesByDetails(
+            [
+                [
+                    'details' => ['name' => 'Event Bus'],
+                    'children' => [
+                        [
+                            'details' => ['name' => 'Event Handler: ' . MerchantSubscriberOne::class . '::merchantToUser'],
+                            'children' => [
+                                [
+                                    'details' => ['name' => 'Command Bus'],
+                                    'children' => [
+                                        [
+                                            'details' => ['name' => 'Command Handler: ' . User::class . '::register'],
+                                            'children' => [],
+                                        ],
+                                    ],
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+            self::buildTree($exporter)
+        );
+    }
+
+    public function test_tracing_with_two_levels_of_nesting_and_two_branches_on_same_level()
+    {
+        $exporter = new InMemoryExporter(new ArrayObject());
+
+        EcotoneLite::bootstrapFlowTesting(
+            [User::class, MerchantSubscriberOne::class, MerchantSubscriberTwo::class],
+            [TracerProviderInterface::class => TracingTestCase::prepareTracer($exporter), new MerchantSubscriberOne(), new MerchantSubscriberTwo()],
+            ServiceConfiguration::createWithDefaults()
+                ->withSkippedModulePackageNames(ModulePackageList::allPackagesExcept([ModulePackageList::TRACING_PACKAGE]))
+        )
+            ->publishEvent(new MerchantCreated('1'));
+
+        self::compareTreesByDetails(
+            [
+                [
+                    'details' => ['name' => 'Event Bus'],
+                    'children' => [
+                        [
+                            'details' => ['name' => 'Event Handler: ' . MerchantSubscriberOne::class . '::merchantToUser'],
+                            'children' => [
+                                [
+                                    'details' => ['name' => 'Command Bus'],
+                                    'children' => [
+                                        [
+                                            'details' => ['name' => 'Command Handler: ' . User::class . '::register'],
+                                            'children' => [],
+                                        ],
+                                    ],
+                                ],
+                            ],
+                        ],
+                        [
+                            'details' => ['name' => 'Event Handler: ' . MerchantSubscriberTwo::class . '::merchantToUser'],
+                            'children' => [
+                                [
+                                    'details' => ['name' => 'Command Bus'],
+                                    'children' => [
+                                        [
+                                            'details' => ['name' => 'Command Handler: ' . User::class . '::register'],
+                                            'children' => [],
+                                        ],
+                                    ],
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+            self::buildTree($exporter)
+        );
+    }
+
+    public function test_tracing_with_three_levels_of_nesting()
+    {
+        $exporter = new InMemoryExporter(new ArrayObject());
+
+        EcotoneLite::bootstrapFlowTesting(
+            [Merchant::class, User::class, MerchantSubscriberOne::class],
+            [TracerProviderInterface::class => TracingTestCase::prepareTracer($exporter), new MerchantSubscriberOne()],
+            ServiceConfiguration::createWithDefaults()
+                ->withSkippedModulePackageNames(ModulePackageList::allPackagesExcept([ModulePackageList::TRACING_PACKAGE]))
+        )
+            ->sendCommand(new CreateMerchant('1'));
+
+        self::compareTreesByDetails(
+            [
+                [
+                    'details' => ['name' => 'Command Bus'],
+                    'children' => [
+                        [
+                            'details' => ['name' => 'Command Handler: ' . Merchant::class . '::create'],
+                            'children' => [
+                                [
+                                    'details' => ['name' => 'Event Bus'],
+                                    'children' => [
+                                        [
+                                            'details' => ['name' => 'Event Handler: ' . MerchantSubscriberOne::class . '::merchantToUser'],
+                                            'children' => [
+                                                [
+                                                    'details' => ['name' => 'Command Bus'],
+                                                    'children' => [
+                                                        [
+                                                            'details' => ['name' => 'Command Handler: ' . User::class . '::register'],
+                                                            'children' => [],
+                                                        ],
+                                                    ],
+                                                ],
+                                            ],
+                                        ],
+                                    ],
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+            self::buildTree($exporter)
+        );
+    }
+
+    public function test_tracing_with_asynchronous_handler()
+    {
+        $exporter = new InMemoryExporter();
+
+        $ecotoneLite = EcotoneLite::bootstrapFlowTesting(
+            [\Test\Ecotone\OpenTelemetry\Fixture\AsynchronousFlow\User::class],
+            [TracerProviderInterface::class => TracingTestCase::prepareTracer($exporter)],
+            ServiceConfiguration::createWithDefaults()
+                ->withSkippedModulePackageNames(ModulePackageList::allPackagesExcept([ModulePackageList::TRACING_PACKAGE, ModulePackageList::ASYNCHRONOUS_PACKAGE]))
+                ->withExtensionObjects([
+                    SimpleMessageChannelBuilder::createQueueChannel('async_channel'),
+                ])
+        )
+            ->sendCommand(new RegisterUser('1'));
+
+        $ecotoneLite->run('async_channel', ExecutionPollingMetadata::createWithTestingSetup());
+
+        self::compareTreesByDetails(
+            [
+                [
+                    'details' => ['name' => 'Command Bus'],
+                    'children' => [
+                        [
+                            'details' => ['name' => 'Sending to Channel: async_channel'],
+                            'children' => [
+                                [
+                                    'details' => ['name' => 'Receiving from channel: async_channel'],
+                                    'children' => [
+                                        [
+                                            'details' => ['name' => 'Command Handler: ' . \Test\Ecotone\OpenTelemetry\Fixture\AsynchronousFlow\User::class . '::register'],
+                                            'children' => [],
+                                        ],
+                                    ],
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+            self::buildTree($exporter)
+        );
+    }
+
+    public function test_adding_logs_as_events_in_span()
+    {
+        $exporter = new InMemoryExporter();
+
+        EcotoneLite::bootstrapFlowTesting(
+            [
+                \Test\Ecotone\OpenTelemetry\Fixture\AsynchronousFlow\User::class,
+                UserNotifier::class,
+            ],
+            [
+                new UserNotifier(),
+                TracerProviderInterface::class => self::prepareTracer($exporter),
+            ],
+            ServiceConfiguration::createWithDefaults()
+                ->withSkippedModulePackageNames(ModulePackageList::allPackagesExcept([ModulePackageList::TRACING_PACKAGE, ModulePackageList::ASYNCHRONOUS_PACKAGE]))
+                ->withExtensionObjects([
+                    SimpleMessageChannelBuilder::createQueueChannel('async_channel'),
+                ])
+        )
+            ->sendCommand(new RegisterUser('1'))
+            ->run('async_channel');
+
+        $result = self::getNodeAtTargetedSpan(
+            [
+                'details' => ['name' => 'Command Bus'],
+                'child' => [
+                    'details' => ['name' => 'Sending to Channel: async_channel'],
+                    'child' => [
+                        'details' => ['name' => 'Receiving from channel: async_channel'],
+                        'child' => [
+                            'details' => ['name' => 'Event Bus'],
+                        ],
+                    ],
+                ],
+            ],
+            self::buildTree($exporter)
+        );
+
+        /** @var Event $event */
+        $event = $result['details']['events'][0];
+        $this->stringStartsWith(
+            'Publishing Event Message',
+        )->evaluate($event->getName());
+
+        /** @var Event $event */
+        $event = $result['details']['events'][2];
+        $this->stringStartsWith(
+            'Collecting message with id',
+        )->evaluate($event->getName());
+    }
+
+    public function test_two_traces_with_asynchronous_handlers()
+    {
+        $exporter = new InMemoryExporter();
+
+        $ecotoneLite = EcotoneLite::bootstrapFlowTesting(
+            [\Test\Ecotone\OpenTelemetry\Fixture\AsynchronousFlow\User::class],
+            [TracerProviderInterface::class => TracingTestCase::prepareTracer($exporter)],
+            ServiceConfiguration::createWithDefaults()
+                ->withSkippedModulePackageNames(ModulePackageList::allPackagesExcept([ModulePackageList::TRACING_PACKAGE, ModulePackageList::ASYNCHRONOUS_PACKAGE]))
+                ->withExtensionObjects([
+                    SimpleMessageChannelBuilder::createQueueChannel('async_channel'),
+                ])
+        )
+            ->sendCommand(new RegisterUser('1'), ['flowId' => '1'])
+            ->sendCommand(new RegisterUser('2'), ['flowId' => '2']);
+
+        $ecotoneLite->run('async_channel', ExecutionPollingMetadata::createWithTestingSetup(amountOfMessagesToHandle: 2));
+
+        $collectedTree = self::buildTree($exporter);
+        self::compareTreesByDetails(
+            [
+                [
+                    'details' => ['name' => 'Command Bus', 'attributes' => ['flowId' => '1']],
+                    'children' => [
+                        [
+                            'details' => ['name' => 'Sending to Channel: async_channel', 'attributes' => ['flowId' => '1']],
+                            'children' => [
+                                [
+                                    'details' => ['name' => 'Receiving from channel: async_channel', 'attributes' => ['flowId' => '1']],
+                                    'children' => [
+                                        [
+                                            'details' => ['name' => 'Command Handler: ' . \Test\Ecotone\OpenTelemetry\Fixture\AsynchronousFlow\User::class . '::register', 'attributes' => ['flowId' => '1']],
+                                            'children' => [],
+                                        ],
+                                    ],
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+                [
+                    'details' => ['name' => 'Command Bus', 'attributes' => ['flowId' => '2']],
+                    'children' => [
+                        [
+                            'details' => ['name' => 'Sending to Channel: async_channel', 'attributes' => ['flowId' => '2']],
+                            'children' => [
+                                [
+                                    'details' => ['name' => 'Receiving from channel: async_channel', 'attributes' => ['flowId' => '2']],
+                                    'children' => [
+                                        [
+                                            'details' => ['name' => 'Command Handler: ' . \Test\Ecotone\OpenTelemetry\Fixture\AsynchronousFlow\User::class . '::register', 'attributes' => ['flowId' => '2']],
+                                            'children' => [],
+                                        ],
+                                    ],
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+            $collectedTree
+        );
+    }
+
+    public function test_passing_user_specific_headers()
+    {
+        $exporter = new InMemoryExporter();
+
+        $ecotoneLite = EcotoneLite::bootstrapFlowTesting(
+            [\Test\Ecotone\OpenTelemetry\Fixture\AsynchronousFlow\User::class],
+            [TracerProviderInterface::class => TracingTestCase::prepareTracer($exporter)],
+            ServiceConfiguration::createWithDefaults()
+                ->withSkippedModulePackageNames(ModulePackageList::allPackagesExcept([ModulePackageList::TRACING_PACKAGE, ModulePackageList::ASYNCHRONOUS_PACKAGE]))
+                ->withExtensionObjects([
+                    SimpleMessageChannelBuilder::createQueueChannel('async_channel'),
+                ])
+        )
+            ->sendCommand(
+                new RegisterUser('1'),
+                [
+                    'user_id' => '123',
+                ]
+            );
+
+        $ecotoneLite->run('async_channel', ExecutionPollingMetadata::createWithTestingSetup());
+
+        self::compareTreesByDetails(
+            [
+                [
+                    'details' => [
+                        'name' => 'Command Bus',
+                        'attributes' => ['user_id' => '123'],
+                    ],
+                    'children' => [
+                        [
+                            'details' => [
+                                'name' => 'Sending to Channel: async_channel',
+                                'attributes' => ['user_id' => '123'],
+                            ],
+                            'children' => [
+                                [
+                                    'details' => [
+                                        'name' => 'Receiving from channel: async_channel',
+                                        'attributes' => ['user_id' => '123'],
+                                    ],
+                                    'children' => [
+                                        [
+                                            'details' => [
+                                                'name' => 'Command Handler: ' . \Test\Ecotone\OpenTelemetry\Fixture\AsynchronousFlow\User::class . '::register',
+                                                'attributes' => ['user_id' => '123'],
+                                            ],
+                                            'children' => [],
+                                        ],
+                                    ],
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+            self::buildTree($exporter)
+        );
+    }
+
+    public function test_user_land_metadata_should_be_skipped_in_case_is_not_scalar(): void
+    {
+        $exporter = new InMemoryExporter(new ArrayObject());
+
+        EcotoneLite::bootstrapFlowTesting(
+            [\Test\Ecotone\OpenTelemetry\Fixture\AsynchronousFlow\User::class],
+            [TracerProviderInterface::class => TracingTestCase::prepareTracer($exporter)],
+            ServiceConfiguration::createWithDefaults()
+                ->withSkippedModulePackageNames(ModulePackageList::allPackagesExcept([ModulePackageList::TRACING_PACKAGE, ModulePackageList::ASYNCHRONOUS_PACKAGE]))
+                ->withExtensionObjects([
+                    SimpleMessageChannelBuilder::createQueueChannel('async_channel'),
+                ])
+        )
+            ->sendCommand(new RegisterUser('1'), [
+                'tokens' => ['123'],
+                'user' => new stdClass(),
+            ])
+            ->run('async_channel', ExecutionPollingMetadata::createWithTestingSetup());
+
+        $node = $this->getNodeAtTargetedSpan(
+            [
+                'details' => ['name' => 'Command Bus'],
+            ],
+            self::buildTree($exporter)
+        );
+
+        $this->assertArrayNotHasKey(
+            'user',
+            $node['details']['attributes']
+        );
+        $this->assertArrayNotHasKey(
+            'tokens',
+            $node['details']['attributes']
+        );
     }
 
     public function MANUAL_test_jaeger_command_event_command_flow()
@@ -176,12 +783,16 @@ final class TracingTreeTest extends TracingTestCase
                 new UserNotifier(),
                 TracerProviderInterface::class => $tracerProvider,
             ],
-            extensionObjects: [
-                OpenTelemetryConfiguration::createWithDefaults(),
-                SimpleMessageChannelBuilder::createQueueChannel('async_channel'),
-            ],
-            enabledModules: [ModulePackageList::TRACING_PACKAGE, ],
-            allowGatewaysToBeRegisteredInContainer: true,
+            ServiceConfiguration::createWithDefaults()
+                ->withSkippedModulePackageNames(ModulePackageList::allPackagesExcept([
+                    ModulePackageList::TRACING_PACKAGE,
+                    ModulePackageList::ASYNCHRONOUS_PACKAGE,
+                ]))
+                ->withExtensionObjects([
+                    TracingConfiguration::createWithDefaults(),
+                    SimpleMessageChannelBuilder::createQueueChannel('async_channel'),
+                ]),
+            allowGatewaysToBeRegisteredInContainer: true
         );
 
         $ecotoneTestSupport->sendCommand(new RegisterUser('2'), ['flowId' => '2']);

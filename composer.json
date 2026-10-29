@@ -27,7 +27,6 @@
     "description": "OpenTelemetry distributed tracing for Ecotone — automatic spans and trace context propagation across sync and async flows.",
     "autoload": {
         "psr-4": {
-            "Ecotone\\Api\\OpenTelemetry\\": "Api/",
             "Ecotone\\OpenTelemetry\\": "src"
         }
     },
@@ -39,12 +38,12 @@
         }
     },
     "require": {
-        "ecotone/ecotone": "~2.0.0-beta.7",
+        "ecotone/ecotone": "~1.328.3",
         "open-telemetry/sdk": "^1.0.0"
     },
     "require-dev": {
         "phpunit/phpunit": "^10.5|^11.0|^12.0",
-        "phpstan/phpstan": "^2.1",
+        "phpstan/phpstan": "^1.8|^2.0",
         "open-telemetry/transport-grpc": "^1.0.0",
         "open-telemetry/exporter-otlp": "^1.0.0",
         "symfony/http-client": "^6.4|^7.0|^8.0",
@@ -65,7 +64,7 @@
     },
     "extra": {
         "branch-alias": {
-            "dev-main": "2.0.x-dev"
+            "dev-main": "1.328.x-dev"
         },
         "ecotone": {
             "repository": "open-telemetry"
@@ -81,7 +80,7 @@
                 "description": "Allows to use Enterprise features of Ecotone. For more information please write to support@simplycodedsoftware.com"
             }
         },
-        "release-time": "2026-10-28 18:55:11"
+        "release-time": "2026-10-29 20:17:56"
     },
     "config": {
         "allow-plugins": {
